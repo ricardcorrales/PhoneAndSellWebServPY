@@ -6,7 +6,6 @@ import re
 import codecs
 from collections import defaultdict
 from waitress import serve
-import csv
 
 app = Flask(__name__, static_url_path='')
 
@@ -24,11 +23,6 @@ SEARCH["Ds_MerchantCode"] = "DS_MERCHANT_MERCHANTCODE"
 SEARCH["Ds_Terminal"] = "DS_MERCHANT_TERMINAL"
 UPDATE = defaultdict(str)
 UPDATE["Ds_Response"] = "DS_MERCHANT_ERROR"
-# Description column
-DESC_COL = ["Ds_Response", "DS_MERCHANT_ESTADO"]
-
-# CSV with code descriptions
-CSV_CODES = "respuestas.csv"
 
 # Initial values of CODES_TO_PRINT table creation
 DEFAULT_VALID_TO_PRINT = ["0000", "9915"]
@@ -48,7 +42,7 @@ def validToPrint():
     except:
         return []
 
-    # Create table if don't exists
+    # Create table if not exists
     cursor.execute("select * from information_schema.tables where table_name=%s", ("CODES_TO_PRINT",))
     exists = bool(cursor.rowcount)
     if not exists:
@@ -67,52 +61,9 @@ def validToPrint():
     return [x[0] for x in res]
 
 
-# GET CODE DESCRIPTION
-def codeDescription(code):
-    # Database connection
-    try:
-        conn = psycopg2.connect(
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASS,
-                host=DB_HOST
-            )
-        cursor = conn.cursor()
-    except:
-        return []
-
-    # Create table if don't exists
-    cursor.execute("select * from information_schema.tables where table_name=%s", ("CODE_DESCRIPTION",))
-    exists = bool(cursor.rowcount)
-    if not exists:
-        query = 'CREATE TABLE public."CODE_DESCRIPTION" ("CODE" character varying NOT NULL, CONSTRAINT pkCodes PRIMARY KEY ("CODE"), "DESC" character varying) WITH (OIDS=FALSE)'
-        cursor.execute(query)
-        conn.commit()
-        
-        # Read csv file
-        DEFAULT_CODES = []
-        with open(CSV_CODES, "r", encoding="utf8") as csvfile:
-            spamreader = csv.reader(csvfile, delimiter=';')
-            for row in spamreader:
-                if row[1] not in [x[0] for x in DEFAULT_CODES]:
-                    DEFAULT_CODES.append(row[1:])
-
-        # Insert defaults
-        items = ','.join("('{0}', '{1}')".format(x[0], x[1].replace("'", "\"")) for x in DEFAULT_CODES)
-        cursor.execute('INSERT INTO "CODE_DESCRIPTION" VALUES ' + items)
-        conn.commit()
-
-    # Fetch code list
-    cursor.execute('SELECT * FROM "CODE_DESCRIPTION" WHERE "CODE" = \'{0}\''.format(code))
-    res = cursor.fetchall()
-    if len(res) == 0:
-        return "-"
-    return res[0][1]
-
-
 # Regular expresions to prevent sql injections
 VALID_IDENTIFIER = r'^[a-zA-Z_][a-zA-Z0-9_\$]*$'
-VALID_VALUE = r'^[a-zA-Z0-9_/: \$]*$'
+VALID_VALUE = r'^[a-zA-Z0-9_/:, \$]*$'
 
 
 # BANK ENDPOINT
@@ -164,7 +115,7 @@ def index():
                 if not re.match(VALID_VALUE, x.text):
                     return "<RESPONSE>Invalid XML (Tag value)</RESPONSE>"
 
-            # Create table if don't exists
+            # Create table if not exists
             cursor.execute("select * from information_schema.tables where table_name=%s", (DB_TABLE,))
             exists = bool(cursor.rowcount)
             if not exists:
@@ -195,15 +146,12 @@ def index():
             search = []
             update = []
             for x in dataTag:
-                match = SEARCH[x.tag]
-                if match != "":
-                    search.append("\"{0}\" = '{1}'".format(match, x.text))
                 match = UPDATE[x.tag]
                 if match != "":
                     update.append("\"{0}\" = '{1}'".format(match, x.text))
-                if x.tag == DESC_COL[0]:
-                    update.append("\"{0}\" = '{1}'".format(DESC_COL[1], codeDescription(x.text)))
-
+                match = SEARCH[x.tag]
+                if match != "":
+                    search.append("\"{0}\" = '{1}'".format(match, x.text))
             search = " AND ".join(search)
             update = ",".join(update)
 
@@ -244,12 +192,9 @@ def cs():
 
             # Parse XML data
             dataTag = ET.fromstring(data)
-
-            # Validate tag names
             for x in dataTag:
                 if not re.match(VALID_IDENTIFIER, x.tag):
                     return "<RESPONSE>Invalid XML (Tag name)</RESPONSE>"
-
             # Validate tag values
             for x in dataTag:
                 if x.text == None:
@@ -257,7 +202,7 @@ def cs():
                 if not re.match(VALID_VALUE, x.text):
                     return "<RESPONSE>Invalid XML (Tag value)</RESPONSE>"
 
-            # Create table if don't exists
+            # Create table if not exists
             cursor.execute("select * from information_schema.tables where table_name=%s", (DB_TABLE_CS,))
             exists = bool(cursor.rowcount)
             if not exists:
