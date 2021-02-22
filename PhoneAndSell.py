@@ -7,6 +7,7 @@ import codecs
 from collections import defaultdict
 from waitress import serve
 import csv
+import locale
 
 app = Flask(__name__, static_url_path='')
 
@@ -32,6 +33,17 @@ CSV_CODES = "respuestas.csv"
 
 # Initial values of CODES_TO_PRINT table creation
 DEFAULT_VALID_TO_PRINT = ["0000", "9915"]
+DEFAULT_VALID_TO_QRY = ["DS_MERCHANT_ESTADO", "DS_MERCHANT_ORDER", "DS_MERCHANT_AMOUNT", "DS_MERCHANT_CLIENT", "DS_MERCHANT_NOMCLIENT", "timestamp"]
+EDIT_MASC_IMPORT = ["DS_MERCHANT_AMOUNT"]
+EDIT_MASC_DATA = ["timestamp"]
+
+
+# use locale that provided the number;
+# example if German locale was used:
+locale.setlocale(locale.LC_ALL, 'es_ES.utf8')
+# pythonnumber = locale.atof(value)
+# float(value.replace('.', '').replace(',', '.'))
+
 
 
 # GET VALID CODES TO PRINT
@@ -109,11 +121,19 @@ def codeDescription(code):
         return "-"
     return res[0][1]
 
+def strToNumber(numStr):
+    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" #these are the digits you will use for conversion back and forth
+    charsLen = len(chars)
+    
+    num = 0
+    for i, c in enumerate(reversed(numStr)):
+        num += chars.index(c) * (charsLen ** i)
+
+    return(num)
 
 # Regular expresions to prevent sql injections
 VALID_IDENTIFIER = r'^[a-zA-Z_][a-zA-Z0-9_\$]*$'
-VALID_VALUE = r'^[a-zA-Z0-9_/: \$]*$'
-
+VALID_VALUE = r'^[a-zA-Z0-9_/:, \$]*$'
 
 # BANK ENDPOINT
 @app.route('/', methods=['GET', 'POST'])
@@ -224,7 +244,6 @@ def cs():
         return "<RESPONSE>Send XML data</RESPONSE>"
 
     if request.method == 'POST':
-        
         # Database connection
         try:
             conn = psycopg2.connect(
@@ -235,13 +254,15 @@ def cs():
                 )
             cursor = conn.cursor()
         except:
+
             return "<RESPONSE>Error connecting to database</RESPONSE>"
         
         try:
+
             data = request.data
             if type(data) == bytes:
                 data = request.data.decode('utf-8')
-
+                
             # Parse XML data
             dataTag = ET.fromstring(data)
 
@@ -267,7 +288,6 @@ def cs():
                 query = 'CREATE TABLE public."{0}" ({1}) WITH (OIDS=FALSE)'.format(DB_TABLE_CS, tags)
                 cursor.execute(query)
                 conn.commit()
-
             # Check for duplicates in DB
             cond = " AND ".join(["\"{0}\" = '{1}'".format(x.tag, x.text) for x in dataTag])
             query = 'SELECT * FROM "{0}" WHERE {1} LIMIT 1'.format(DB_TABLE_CS, cond)
@@ -312,12 +332,31 @@ def tail():
         for row in res:
             line = ""
             for col in row.keys():
-                line = line + "<{0}>{1}</{0}>".format(col, row[col])
+                # if col in EDIT_MASC_IMPORT:      
+                #     print(col)    
+                #     print(row[col])   
+                #     print(strToNumber(row[col]))    
+                #     row[col] = "{:.,2f}".format(strToNumber(row[col]))
+                # colAlfa = row[col]
+                if col in EDIT_MASC_DATA:
+                    dataEdit = str(row[col])
+                    row[col] = dataEdit[0:16]
+                    
+                if col in EDIT_MASC_IMPORT:   
+                    number = float(row[col])/100
+                    # numberAlfa = "{:,.2f}".format(number)
+                    # print(type(numberAlfa))
+                    row[col] = "{:,.2f}".format(number)
+                    row[col] = str(row[col].replace('.', ','))
+                if col in DEFAULT_VALID_TO_QRY:
+                    line = line + "<{0}>{1}</{0}>".format(col, row[col])
+
             response = response + "<{0}>{1}</{0}>".format("LOG", line)
 
         return "<{0}>{1}</{0}>".format("RESPONSE", response)
     except:
         return "<RESPONSE>Error connecting to database</RESPONSE>"
+    
 
 
 # PRINT LIST
