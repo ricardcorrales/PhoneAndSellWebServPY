@@ -8,6 +8,8 @@ from collections import defaultdict
 from waitress import serve
 import csv
 import locale
+from base64 import b64decode
+import json
 
 app = Flask(__name__, static_url_path='')
 
@@ -17,6 +19,11 @@ DB_USER = "postgres"
 DB_PASS = "postgres"
 DB_TABLE = "pis"
 DB_TABLE_CS = "pis_cs"
+
+# BANK TAGS
+BANK_TAGS = [
+    "Ds_Order", "Ds_MerchantCode", "Ds_Terminal", "Ds_Response"
+]
 
 # Update query settings
 SEARCH = defaultdict(str)
@@ -135,6 +142,13 @@ def strToNumber(numStr):
 VALID_IDENTIFIER = r'^[a-zA-Z_][a-zA-Z0-9_\$]*$'
 VALID_VALUE = r'^[a-zA-Z0-9_/:, \$]*$'
 
+class row:
+    tag = ""
+    text = ""
+    def __init__(self, tag, text):
+        self.tag = tag
+        self.text = text
+
 # BANK ENDPOINT
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -156,11 +170,30 @@ def index():
         except:
             return "<RESPONSE>Error connecting to database</RESPONSE>"
 
-        try:
-            data = request.data
-            if type(data) == bytes:
-                data = request.data.decode('utf-8')
-
+    # try:
+        data = request.data
+        print("Data:")
+        print(data)
+        print(request.form)
+        
+        print(b64decode(request.form["Ds_MerchantParameters"]))
+        print("Query:")
+        if type(data) == bytes:
+            data = request.data.decode('utf-8')
+            
+        dataTag = []
+        tagList = []
+        
+        if data == "":
+            if type(request.form["Ds_MerchantParameters"]) == None:
+                return ""
+            
+            data = b64decode(request.form["Ds_MerchantParameters"])
+            data = json.loads(data)
+            for x in data.keys():
+                if x in BANK_TAGS:
+                    dataTag.append(row(x, data[x]))
+        else:
             declaration = data.find("?>")
             if declaration != -1:
                 data = data[declaration + 2:]
@@ -172,65 +205,70 @@ def index():
             dataTag = ET.fromstring(data)
             dataTag = dataTag[0]
 
-            # Validate tag names
-            for x in dataTag:
-                if not re.match(VALID_IDENTIFIER, x.tag):
-                    return "<RESPONSE>Invalid XML (Tag name)</RESPONSE>"
+        # Validate tag names
+        for x in dataTag:
+            if x.tag in BANK_TAGS:
+                tagList.append(x)
+            if not re.match(VALID_IDENTIFIER, x.tag):
+                return "<RESPONSE>Invalid XML (Tag name)</RESPONSE>"
 
-            # Validate tag values
-            for x in dataTag:
-                if x.text == None:
-                    x.text = ""
-                if not re.match(VALID_VALUE, x.text):
-                    return "<RESPONSE>Invalid XML (Tag value)</RESPONSE>"
+        # Validate tag values
+        # for x in dataTag:
+        #     if x.text == None:
+        #         x.text = ""
+        #     if not re.match(VALID_VALUE, x.text):
+        #         return "<RESPONSE>Invalid XML (Tag value)</RESPONSE>"
+            
 
-            # Create table if don't exists
-            cursor.execute("select * from information_schema.tables where table_name=%s", (DB_TABLE,))
-            exists = bool(cursor.rowcount)
-            if not exists:
-                tags = ",".join(['"{0}" character varying'.format(x.tag) for x in dataTag])
-                tags = tags + ',"timestamp" timestamp with time zone'
-                query = 'CREATE TABLE public."{0}" ({1}) WITH (OIDS=FALSE)'.format(DB_TABLE, tags)
-                cursor.execute(query)
-                conn.commit()
-
-            # Check for duplicates in DB
-            cond = " AND ".join(["\"{0}\" = '{1}'".format(x.tag, x.text) for x in dataTag])
-            query = 'SELECT * FROM "{0}" WHERE {1} LIMIT 1'.format(DB_TABLE, cond)
-            cursor.execute(query)
-            res = cursor.fetchall()
-
-            if len(res) != 0:
-                return "<RESPONSE>Dataset already in database</RESPONSE>"
-
-            tags = ",".join(['"{0}"'.format(x.tag) for x in dataTag])
-            values = ",".join(["'{0}'".format(x.text) for x in dataTag])
-
-            # Insert in DB
-            query = 'INSERT INTO "{0}"({1}, "timestamp") VALUES({2}, NOW()) '.format(DB_TABLE, tags, values)
+        # Create table if don't exists
+        cursor.execute("select * from information_schema.tables where table_name=%s", (DB_TABLE,))
+        exists = bool(cursor.rowcount)
+        if not exists:
+            tags = ",".join(['"{0}" character varying'.format(x.tag) for x in tagList])
+            tags = tags + ',"timestamp" timestamp with time zone'
+            query = 'CREATE TABLE public."{0}" ({1}) WITH (OIDS=FALSE)'.format(DB_TABLE, tags)
             cursor.execute(query)
             conn.commit()
 
-            # Update CS table
-            search = []
-            update = []
-            for x in dataTag:
-                match = SEARCH[x.tag]
-                if match != "":
-                    search.append("\"{0}\" = '{1}'".format(match, x.text))
-                match = UPDATE[x.tag]
-                if match != "":
-                    update.append("\"{0}\" = '{1}'".format(match, x.text))
-                if x.tag == DESC_COL[0]:
-                    update.append("\"{0}\" = '{1}'".format(DESC_COL[1], codeDescription(x.text)))
+        # Check for duplicates in DB
+        cond = " AND ".join(["\"{0}\" = '{1}'".format(x.tag, x.text) for x in tagList])
+        query = 'SELECT * FROM "{0}" WHERE {1} LIMIT 1'.format(DB_TABLE, cond)
+        cursor.execute(query)
+        res = cursor.fetchall()
 
-            search = " AND ".join(search)
-            update = ",".join(update)
+        if len(res) != 0:
+            return "<RESPONSE>Dataset already in database</RESPONSE>"
 
-            query = 'UPDATE "{0}" SET {1} WHERE {2}'.format(DB_TABLE_CS, update, search)
-            cursor.execute(query)
-            conn.commit()
+        tags = ",".join(['"{0}"'.format(x.tag) for x in tagList])
+        values = ",".join(["'{0}'".format(x.text) for x in tagList])
 
+        # Insert in DB
+        query = 'INSERT INTO "{0}"({1}, "timestamp") VALUES({2}, NOW()) '.format(DB_TABLE, tags, values)
+        cursor.execute(query)
+        conn.commit()
+
+        # Update CS table
+        search = []
+        update = []
+        for x in tagList:
+            match = SEARCH[x.tag]
+            if match != "":
+                search.append("\"{0}\" = '{1}'".format(match, x.text))
+            match = UPDATE[x.tag]
+            if match != "":
+                update.append("\"{0}\" = '{1}'".format(match, x.text))
+            if x.tag == DESC_COL[0]:
+                update.append("\"{0}\" = '{1}'".format(DESC_COL[1], codeDescription(x.text)))
+
+        search = " AND ".join(search)
+        update = ",".join(update)
+
+        query = 'UPDATE "{0}" SET {1} WHERE {2}'.format(DB_TABLE_CS, update, search)
+        print(query)
+        cursor.execute(query)
+        conn.commit()
+        try:
+            pass
         except:
             return "<RESPONSE>Invalid XML</RESPONSE>"
         return "<RESPONSE>OK</RESPONSE>"
@@ -369,7 +407,6 @@ def printList():
             host=DB_HOST
         )
     cursor = conn.cursor(cursor_factory = DictCursor)
-
     # Get unprinted valid logs
     VALID_TO_PRINT = validToPrint()
     toPrint = ",".join(["'{0}'".format(x) for x in VALID_TO_PRINT])
@@ -378,7 +415,7 @@ def printList():
     res = cursor.fetchall()
 
     # Update printed column
-    query = 'UPDATE "{0}" SET "printed" = TRUE WHERE "printed" = FALSE AND "DS_MERCHANT_ERROR" in ({1})'.format(DB_TABLE_CS, toPrint)
+    query = 'UPDATE "{0}" SET "printed" = TRUE, "DS_MERCHANT_IMPRESO" = \'Impreso\' WHERE "printed" = FALSE AND "DS_MERCHANT_ERROR" in ({1})'.format(DB_TABLE_CS, toPrint)
     cursor.execute(query)
     conn.commit()
 
@@ -398,3 +435,4 @@ def printList():
 
 if __name__ == "__main__":
     serve(app, host="0.0.0.0", port=8150)
+    # app.run(debug=False, host='0.0.0.0', port=8150)
