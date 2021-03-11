@@ -10,6 +10,15 @@ import csv
 import locale
 from base64 import b64decode
 import json
+from urllib.parse import unquote
+import os
+from datetime import datetime
+
+
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+if not os.path.exists("logs_cs"):
+    os.makedirs("logs_cs")
 
 app = Flask(__name__, static_url_path='')
 
@@ -40,7 +49,7 @@ CSV_CODES = "respuestas.csv"
 
 # Initial values of CODES_TO_PRINT table creation
 DEFAULT_VALID_TO_PRINT = ["0000", "9915"]
-DEFAULT_VALID_TO_QRY = ["DS_MERCHANT_ESTADO", "DS_MERCHANT_ORDER", "DS_MERCHANT_AMOUNT", "DS_MERCHANT_CLIENT", "DS_MERCHANT_NOMCLIENT", "timestamp"]
+DEFAULT_VALID_TO_QRY = ["DS_MERCHANT_ESTADO", "DS_TICKET", "DS_MERCHANT_AMOUNT", "DS_MERCHANT_CLIENT", "DS_MERCHANT_NOMCLIENT", "timestamp"]
 EDIT_MASC_IMPORT = ["DS_MERCHANT_AMOUNT"]
 EDIT_MASC_DATA = ["timestamp"]
 
@@ -140,7 +149,7 @@ def strToNumber(numStr):
 
 # Regular expresions to prevent sql injections
 VALID_IDENTIFIER = r'^[a-zA-Z_][a-zA-Z0-9_\$]*$'
-VALID_VALUE = r'^[a-zA-Z0-9_/:, \$]*$'
+VALID_VALUE = r'^[a-zA-Z0-9_/:,?ºª=çÇ \$]*$'
 
 class row:
     tag = ""
@@ -172,12 +181,7 @@ def index():
 
     # try:
         data = request.data
-        print("Data:")
-        print(data)
-        print(request.form)
         
-        print(b64decode(request.form["Ds_MerchantParameters"]))
-        print("Query:")
         if type(data) == bytes:
             data = request.data.decode('utf-8')
             
@@ -207,6 +211,10 @@ def index():
 
         # Validate tag names
         for x in dataTag:
+            if x.tag == "Ds_Date":
+                with open("logs/" + x.text + ".log", "w") as file:
+                    file.write(data)
+            
             if x.tag in BANK_TAGS:
                 tagList.append(x)
             if not re.match(VALID_IDENTIFIER, x.tag):
@@ -264,7 +272,6 @@ def index():
         update = ",".join(update)
 
         query = 'UPDATE "{0}" SET {1} WHERE {2}'.format(DB_TABLE_CS, update, search)
-        print(query)
         cursor.execute(query)
         conn.commit()
         try:
@@ -301,20 +308,25 @@ def cs():
             if type(data) == bytes:
                 data = request.data.decode('utf-8')
                 
+            fname = str(datetime.now())
+            fname = fname.replace(":", "-")
+            with open("logs_cs/" + fname + ".log", "w") as file:
+                file.write(data)
+                
             # Parse XML data
             dataTag = ET.fromstring(data)
-
-            # Validate tag names
+            # Validate tag names and values
             for x in dataTag:
                 if not re.match(VALID_IDENTIFIER, x.tag):
                     return "<RESPONSE>Invalid XML (Tag name)</RESPONSE>"
-
-            # Validate tag values
-            for x in dataTag:
                 if x.text == None:
                     x.text = ""
                 if not re.match(VALID_VALUE, x.text):
+                    print("invalid 2")
                     return "<RESPONSE>Invalid XML (Tag value)</RESPONSE>"
+                if x.tag == "DS_ADDRESS":
+                    if x.text != "":
+                        x.text = b64decode(x.text).decode('utf-8')
 
             # Create table if don't exists
             cursor.execute("select * from information_schema.tables where table_name=%s", (DB_TABLE_CS,))
@@ -336,7 +348,7 @@ def cs():
                 return "<RESPONSE>Dataset already in database</RESPONSE>"
 
             tags = ",".join(['"{0}"'.format(x.tag) for x in dataTag])
-            values = ",".join(["'{0}'".format(x.text) for x in dataTag])
+            values = ",".join(["'{0}'".format(unquote(x.text)) for x in dataTag])
 
             # Insert in DB
             query = 'INSERT INTO "{0}"({1}, "timestamp") VALUES({2}, NOW())'.format(DB_TABLE_CS, tags, values)
@@ -344,6 +356,7 @@ def cs():
             conn.commit()
 
         except:
+            print("error /cs:", query)
             return "<RESPONSE>Invalid XML</RESPONSE>"
         return "<RESPONSE>OK</RESPONSE>"
 
@@ -361,7 +374,8 @@ def tail():
         cursor = conn.cursor(cursor_factory = DictCursor)
 
         # Get las 2 days logs
-        query = 'SELECT * FROM "{0}" WHERE "timestamp" > now() - interval \'2 days\''.format(DB_TABLE_CS)
+        # query = 'SELECT * FROM "{0}" WHERE "timestamp" > now() - interval \'2 days\' order by "timestamp" DESC'.format(DB_TABLE_CS)
+        query = 'SELECT * FROM "{0}" WHERE "timestamp" > now() - interval \'3 days\' order by "timestamp" DESC'.format(DB_TABLE_CS)
         cursor.execute(query)
         res = cursor.fetchall()
 
